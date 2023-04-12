@@ -98,6 +98,7 @@ struct asm_line_expanded {
 	uint32 EffectiveAddress = NO_ADDR;
 	uint16 Displacement = 0;
 	uint16 Data = 0;
+	bool HasData = false;
 	bool ToRegister = 0;
 	bool EffectiveAddressInDestination = 0;
 };
@@ -147,6 +148,7 @@ short_string ConvertRegisterToString(uint32 Register) {
 }
 
 void PrintASMLine(asm_line_expanded ASMLine) {
+	
 	// Print the command
 	short_string CommandString = ConvertCommandToString(ASMLine.Command);	
 	
@@ -175,7 +177,11 @@ void PrintASMLine(asm_line_expanded ASMLine) {
 	if(ASMLine.EffectiveAddress!=NO_ADDR){
 		// Direct Address exception
 		if(ASMLine.EffectiveAddress==DIRECT_ADDR) {
-			sprintf(DestinationString.S, "[%i]", ASMLine.Displacement);
+			if(ASMLine.EffectiveAddressInDestination) {
+				sprintf(DestinationString.S, "[%i]", ASMLine.Displacement);				
+			} else {
+				sprintf(SourceString.S, "[%i]", ASMLine.Displacement);
+			}
 		// All other cases
 		} else {
 			EffectiveAddressString = ConvertEffectiveAddressToString(ASMLine.EffectiveAddress);
@@ -192,7 +198,7 @@ void PrintASMLine(asm_line_expanded ASMLine) {
 			}
 		}
 	}
-	if(ASMLine.Data>0) {
+	if(ASMLine.HasData==true) {
 		sprintf(SourceString.S, "%i", (int16)ASMLine.Data);
 	}
 	
@@ -205,6 +211,7 @@ void PrintASMLine(asm_line_expanded ASMLine) {
 	
 	// End of line
 	printf("\n");
+	
 }
 
 void PrintASMLines(asm_line_expanded *ASMLines, uint32 NumberOfLines) {
@@ -413,6 +420,7 @@ uint8 MEMORY_MODE_16BIT_DIS = 0b10;
 uint8 REGISTER_MODE = 0b011;
 
 struct registers {
+	uint16 *Memory;
 	uint8 LowRegisters[32];
 	uint16 HighRegisters[32];
 	bool ZeroFlag = false;
@@ -430,6 +438,26 @@ void Set16BitValue(uint16 *Register, int ID, uint16 Value) {
 }
 
 
+uint16 GetMemoryAddressFromEffectiveAdress(uint32 EffectiveAddress, uint16 Displacement, registers R){
+	uint16 Result = 0;
+	switch(EffectiveAddress){
+		case NO_ADDR: {Result = 0;} break; 
+		case ADDR_BX_PLUS_SI: {Result = R.HighRegisters[BX] + R.HighRegisters[DI] + Displacement;} break;
+		case ADDR_BX_PLUS_DI: {Result = R.HighRegisters[BX] + R.HighRegisters[DI] + Displacement;} break;
+		case ADDR_BP_PLUS_DI: {Result = R.HighRegisters[BP] + R.HighRegisters[DI] + Displacement;} break;
+		case ADDR_BP_PLUS_SI: {Result = R.HighRegisters[BP] + R.HighRegisters[SI] + Displacement;} break;
+		case ADDR_SI: {Result = R.HighRegisters[SI] + Displacement;} break;
+		case ADDR_DI: {Result = R.HighRegisters[DI] + Displacement;} break;
+		case ADDR_BP:  {Result = R.HighRegisters[BP] + Displacement;} break;
+		case DIRECT_ADDR: {
+			//printf("DIRECT ADDR HAS BEEN REACHED IN THE GET MEMORY ADDRESS FROM EFFECTIVE ADDRESS FUNCTION. THIS SHOULD NOT BE POSSIBLE!");
+		} break;
+		case ADDR_BX: {Result = R.HighRegisters[BX] + Displacement;} break;
+		default : {Result = 0;} break;
+	}
+	return Result;
+}
+
 void PrintOutRegisters (registers Registers) {
 	//printf("AH[%X] AL[%X]\n", Registers.LowRegisters[AH], Registers.LowRegisters[AL]);
     //printf("BH[%X] BL[%X]\n", Registers.LowRegisters[BH], Registers.LowRegisters[BL]);
@@ -445,17 +473,56 @@ void PrintOutRegisters (registers Registers) {
 	printf("   DI[%i]\n", (int16) Registers.HighRegisters[DI]);
 	printf("ZeroFlag=%i\n", Registers.ZeroFlag);
 	printf("SignFlag=%i\n", Registers.SignFlag);
+	printf("Memory 1000[%i]\n", (int16) Registers.Memory[1000]);
+	printf("Memory 1002[%i]\n", (int16) Registers.Memory[1002]);
+	printf("Memory 1004[%i]\n", (int16) Registers.Memory[1004]);
+	printf("Memory 1006[%i]\n", (int16) Registers.Memory[1006]);
 	printf("\n");
 }
 
 registers RunASMLine(asm_line_expanded ASMLine, registers R) {
 	if(ASMLine.Command==MOV) {
-		// Direct Write
-		if(ASMLine.Data>0) {
-			Set16BitValue(R.HighRegisters, ASMLine.DestinationRegister, ASMLine.Data);
-		// Reg to Reg - TODO: might need to modify if we're doing different stuff 
+		// DIRECT DATA WRITE
+		if(ASMLine.HasData==true) {
+			if(ASMLine.EffectiveAddressInDestination==true) {
+				// Direct data to Memory Address
+				if(ASMLine.EffectiveAddress==DIRECT_ADDR) {
+					R.Memory[ASMLine.Displacement] = ASMLine.Data;
+				// Direct data to Effective Memory Address
+				} else {
+					uint16 ActualMemoryAddress = GetMemoryAddressFromEffectiveAdress(ASMLine.EffectiveAddress, ASMLine.Displacement, R);
+					R.Memory[ActualMemoryAddress] = ASMLine.Data;
+				}
+			// Direct data to register
+			} else {
+				Set16BitValue(R.HighRegisters, ASMLine.DestinationRegister, ASMLine.Data);				
+			}
+		// MEMORY TO REG or REG TO MEMORY
+		} else if (ASMLine.EffectiveAddress!=NO_ADDR) {
+			uint16 ActualMemoryAddress = 0;
+			if(ASMLine.EffectiveAddress==DIRECT_ADDR) {
+				// have not implemented direct address yet, lol
+				ActualMemoryAddress = ASMLine.Displacement;
+				
+			} else {
+				ActualMemoryAddress = GetMemoryAddressFromEffectiveAdress(ASMLine.EffectiveAddress, ASMLine.Displacement, R);
+				//printf("Displacement: %i\n", ASMLine.Displacement);
+				//printf("ActualMemoryAddress: %i\n", ActualMemoryAddress);
+			// Reg to memory
+			}
+			//printf("Reg to Memory\n");
+			//printf("Displacement: %i\n", ASMLine.Displacement);
+			//printf("ActualMemoryAddress: %i\n", ActualMemoryAddress);
+			// put addreesadsfgsd fb
+			if(ASMLine.EffectiveAddressInDestination) {
+				R.Memory[ActualMemoryAddress] = R.HighRegisters[ASMLine.SourceRegister];
+			// Memory to reg
+			} else {
+				R.HighRegisters[ASMLine.DestinationRegister] = R.Memory[ActualMemoryAddress];
+			}
+		// REG TO REG 
 		} else if(ASMLine.SourceRegister!=NO_REG&&ASMLine.DestinationRegister!=NO_REG) {
-			Set16BitValue(R.HighRegisters, ASMLine.DestinationRegister, R.HighRegisters[ASMLine.SourceRegister]);
+			Set16BitValue(R.HighRegisters, ASMLine.DestinationRegister, R.HighRegisters[ASMLine.SourceRegister]);	
 		}
 	} else if (ASMLine.Command==ADD||ASMLine.Command==SUB||ASMLine.Command==CMP) {
 		uint16 SourceNumber;
@@ -463,7 +530,7 @@ registers RunASMLine(asm_line_expanded ASMLine, registers R) {
 		uint16 FinalDestinationData;
 		
 		// Get source and destination numbers depending on command intricacies
-		if(ASMLine.Data>0) {
+		if(ASMLine.HasData==true) {
 			SourceNumber = ASMLine.Data;
 			DestinationNumber = R.HighRegisters[ASMLine.DestinationRegister];
 		} else if(ASMLine.SourceRegister!=NO_REG&&ASMLine.DestinationRegister!=NO_REG) {
@@ -508,9 +575,13 @@ registers RunASMLines(asm_line_expanded *ASMLines, uint32 NumberOfLines, registe
 }
 
 int main(int argc, char *argv[])
+
 {
 
 	char ReadFilename[255];	
+	//strcpy(ReadFilename, "listing_0052_memory_add_loop");
+	//strcpy(ReadFilename, "listing_0051_memory_mov");
+	
 	if( argc == 2 ) {
 		strcpy(ReadFilename, argv[1]);
 	} else if( argc > 2 ) {
@@ -533,6 +604,8 @@ int main(int argc, char *argv[])
 	PointerToFileData = malloc(FileSize+1);
 	fread(PointerToFileData, FileSize, 1, ReadFile);
 	fclose(ReadFile);
+	
+	printf("FileSize: %i\n", FileSize); 
 
 	printf("bits 16\n");
 	
@@ -540,14 +613,15 @@ int main(int argc, char *argv[])
 	
 	// Set up the emulated 8086 state
 	registers Registers = {};
+	Registers.Memory = (uint16 *) malloc(1024*1024); 
 	
 	// Do the logic
 	uint8 *CommandChunkCursor = (uint8*)PointerToFileData;
 	
-	
 	uint32 NumberOfLines = 0;
 	asm_line_expanded LinesOfAsm[100];
 	
+	// In this functionality, i Will be the value for the Instruction Pointer
 	for(int i=0;i<FileSize;i++) {
 		uint8 CurrentCommandChunk = *CommandChunkCursor;
 		char StringCommand[3];
@@ -571,56 +645,56 @@ int main(int argc, char *argv[])
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = JE;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// JL	
 		} else if(FirstByte==JL) { 
 			i++;
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = JL;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// JLE	
 		} else if(FirstByte==JLE) {
 			i++;
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = JLE;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// JB	
 		} else if(FirstByte==JB) {
 			i++;
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = JB;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// JBE
 		} else if(FirstByte==JBE) {
 			i++;
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = JBE;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// JP	
 		} else if(FirstByte==JP) {
 			i++;
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = JP;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// JO	
 		} else if(FirstByte==JO) {
 			i++;
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = JO;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// JS	
 		} else if(FirstByte==JS) {
 			i++;
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = JS;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// JNE is the same as JNZ
 		/*} else if(FirstByte==JNZ) {
 			i++;
@@ -633,77 +707,77 @@ int main(int argc, char *argv[])
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = JNL;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// JG	
 		}  else if(FirstByte==JG) {
 			i++;
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = JG;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// JNB	
 		} else if(FirstByte==JNB) {
 			i++;
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = JNB;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// JA
 		} else if(FirstByte==JA) {
 			i++;
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = JA;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// JNP	
 		} else if(FirstByte==JNP) {
 			i++;
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = JNP;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// JNO	
 		} else if(FirstByte==JNO) {
 			i++;
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = JNO;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// JNS	
 		} else if(FirstByte==JNS) {
 			i++;
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = JNS;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// LOOP	
 		} else if(FirstByte==LOOP) {
 			i++;
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = LOOP;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// LOOPZ	
 		} else if(FirstByte==LOOPZ) {
 			i++;
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = LOOPZ;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// LOOPNZ	
 		} else if(FirstByte==LOOPNZ) {
 			i++;
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = LOOPNZ;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// JCXZ
 		} else if(FirstByte==JCXZ) {
 			i++;
 			uint8 SecondByte = CommandChunkCursor[i];
 			LinesOfAsm[NumberOfLines].Displacement = SecondByte;
 			LinesOfAsm[NumberOfLines].Command = JCXZ;
-			i += (int8) SecondByte;
+			//i += (int8) SecondByte;
 		// IMMEDIATE TO REGISTER mov (1-0-1-1-w-reg-reg-reg)
 		} else if((FirstByte & 0b11110000)==0b10110000) {
 			LinesOfAsm[NumberOfLines].Command = MOV;
@@ -716,12 +790,12 @@ int main(int argc, char *argv[])
 			uint8 SecondByte = CommandChunkCursor[i];
 			
 			// Since we're directly putting data, we dont' have to worry about whether the REG is source or destination; it's always destination
-			strcpy(StringDestination, GetRegisterString(REG, WordData));
-			LinesOfAsm[NumberOfLines].Data = SecondByte;
+			//strcpy(StringDestination, GetRegisterString(REG, WordData));
 			LinesOfAsm[NumberOfLines].DestinationRegister = GetRegisterCode(REG, WordData);
 		
 			// 8 bit data
 			if(WordData==0) {
+				LinesOfAsm[NumberOfLines].HasData = true;
 				LinesOfAsm[NumberOfLines].Data = SecondByte;
 			// 16 bit data
 			} else {
@@ -731,6 +805,7 @@ int main(int argc, char *argv[])
 				uint8 ThirdByte = CommandChunkCursor[i];
 				uint16 D16Data = ((uint16) ThirdByte << 8) | ((uint16) SecondByte);
 				LinesOfAsm[NumberOfLines].Data = D16Data;
+				LinesOfAsm[NumberOfLines].HasData = true;
 			}
 		// IMMEDIATE TO ACCUMULATOR
 		} else if ((FirstByte & 0b11000110)==0b00000100) {
@@ -762,6 +837,7 @@ int main(int argc, char *argv[])
 			uint16 D16Data = ((uint16) ThirdByte << 8) | ((uint16) SecondByte);
 			
 			LinesOfAsm[NumberOfLines].Data = D16Data;
+			LinesOfAsm[NumberOfLines].HasData = true;
 			
 		// REGISTER/MEMORY TO/FROM REGISTER  
 				   // mov (1-0-0-0-1-0-d-w)
@@ -799,13 +875,13 @@ int main(int argc, char *argv[])
 				if(DestInRegField==true) {
 					LinesOfAsm[NumberOfLines].DestinationRegister = GetRegisterCode(REG, WordData);
 					LinesOfAsm[NumberOfLines].SourceRegister = GetRegisterCode(R_M, WordData);
-					strcpy(StringDestination, GetRegisterString(REG, WordData));
-					strcpy(StringSource, GetRegisterString(R_M, WordData));
+					//strcpy(StringDestination, GetRegisterString(REG, WordData));
+					//strcpy(StringSource, GetRegisterString(R_M, WordData));
 				} else {
 					LinesOfAsm[NumberOfLines].DestinationRegister = GetRegisterCode(R_M, WordData);
 					LinesOfAsm[NumberOfLines].SourceRegister = GetRegisterCode(REG, WordData);
-					strcpy(StringDestination, GetRegisterString(R_M, WordData));
-					strcpy(StringSource, GetRegisterString(REG, WordData));
+					//strcpy(StringDestination, GetRegisterString(R_M, WordData));
+					//strcpy(StringSource, GetRegisterString(REG, WordData));
 				}
 			// MEMORY MODES
 			} else {
@@ -820,7 +896,15 @@ int main(int argc, char *argv[])
 				if (Mode==MEMORY_MODE_MOSTLY_NO_DIS) {
 					// Direct Address
 					if(R_M==0b110){
-						// have not implemented, lol
+						//CommandChunkCursor++; 
+						i++;
+						uint8 ThirdByte = CommandChunkCursor[i];
+						//CommandChunkCursor++; 
+						i++;
+						uint8 FourthByte = CommandChunkCursor[i];
+						uint16 D16Displacement = ((uint16) FourthByte << 8) | ((uint16) ThirdByte);
+						LinesOfAsm[NumberOfLines].Displacement = D16Displacement;
+						LinesOfAsm[NumberOfLines].EffectiveAddress = DIRECT_ADDR;
 						
 					} else {
 					}
@@ -851,19 +935,20 @@ int main(int argc, char *argv[])
 				if(DestInRegField==true) {
 					LinesOfAsm[NumberOfLines].DestinationRegister = GetRegisterCode(REG, WordData);
 					LinesOfAsm[NumberOfLines].SourceRegister = GetRegisterCode(R_M, WordData);
-					strcpy(StringDestination, GetRegisterString(REG, WordData));
-					strcpy(StringSource, GetRegisterString(R_M, WordData));
+					//strcpy(StringDestination, GetRegisterString(REG, WordData));
+					//strcpy(StringSource, GetRegisterString(R_M, WordData));
 				} else {
 					LinesOfAsm[NumberOfLines].EffectiveAddressInDestination = true;
 					LinesOfAsm[NumberOfLines].DestinationRegister = GetRegisterCode(R_M, WordData);
 					LinesOfAsm[NumberOfLines].SourceRegister = GetRegisterCode(REG, WordData);
-					strcpy(StringDestination, GetRegisterString(R_M, WordData));
-					strcpy(StringSource, GetRegisterString(REG, WordData));
+					//strcpy(StringDestination, GetRegisterString(R_M, WordData));
+					//strcpy(StringSource, GetRegisterString(REG, WordData));
 				}
 				
 			}
-		// IMMEDIATE TO REGISTER/MEMORY
-		} else if ((FirstByte & 0b11111100)==0b10000000) {
+		// IMMEDIATE TO REGISTER/MEMORY MOV and ADD/SUB/CMP
+		} else if (((FirstByte & 0b11111100)==0b10000000)
+			||((FirstByte & 0b11111110)==0b11000110)) {
 			uint16 FinalData;
 			bool SignExtension = FirstByte & 0b00000010;
 			bool WordData = FirstByte & 0b00000001;
@@ -877,14 +962,21 @@ int main(int argc, char *argv[])
 			uint8 R_M = SecondByte & 0b00000111;
 			
 			// We can get the command name here
-			uint8 DeterminingBits = (SecondByte & 0b00111000) >> 3;
-			strcpy(StringCommand, GetCommandFromDeterminingBits(DeterminingBits));
-			LinesOfAsm[NumberOfLines].Command = GetCommandCodeFromDeterminingBits(DeterminingBits);
+			// mov
+			if((FirstByte & 0b11111110)==0b11000110) {
+				strcpy(StringCommand, "mov");
+				LinesOfAsm[NumberOfLines].Command = MOV;	
+			// add/sub/cmp
+			} else {
+				uint8 DeterminingBits = (SecondByte & 0b00111000) >> 3;
+				strcpy(StringCommand, GetCommandFromDeterminingBits(DeterminingBits));
+				LinesOfAsm[NumberOfLines].Command = GetCommandCodeFromDeterminingBits(DeterminingBits);				
+			}
 
 			// this is true unlesss REGISTER_MODE
 			LinesOfAsm[NumberOfLines].EffectiveAddressInDestination = true;
 			if(Mode==REGISTER_MODE) {
-					strcpy(StringDestination, GetRegisterString(R_M, WordData));	
+					//strcpy(StringDestination, GetRegisterString(R_M, WordData));	
 					LinesOfAsm[NumberOfLines].DestinationRegister = GetRegisterCode(R_M, WordData);		
 					LinesOfAsm[NumberOfLines].EffectiveAddressInDestination = false;
 			} else {
@@ -940,7 +1032,7 @@ int main(int argc, char *argv[])
 			i++;
 			uint8 FirstDataByte = CommandChunkCursor[i];
 			uint8 SecondDataByte = 0;
-			if(WordData&&SignExtension==false) {
+			if(WordData&&(LinesOfAsm[NumberOfLines].Command==MOV||(SignExtension==false))) {
 				//CommandChunkCursor++; 
 				i++;
 				uint8 SecondDataByte = CommandChunkCursor[i];
@@ -949,6 +1041,7 @@ int main(int argc, char *argv[])
 			FinalData = ((uint16) SecondDataByte << 8) | ((uint16) FirstDataByte);
 			
 			LinesOfAsm[NumberOfLines].Data = FinalData;
+			LinesOfAsm[NumberOfLines].HasData = true;
 		}
 		Registers = RunASMLine(LinesOfAsm[NumberOfLines], Registers);
 		PrintASMLine(LinesOfAsm[NumberOfLines]);
