@@ -147,6 +147,8 @@ short_string ConvertRegisterToString(uint32 Register) {
 	return Result;
 }
 
+// la la la la
+
 void PrintASMLine(asm_line_expanded ASMLine) {
 	
 	// Print the command
